@@ -8,6 +8,7 @@ struct MainTabView: View {
     @State private var channelStore = ChannelStore()
     @State private var emojiStore = EmojiStore()
     @State private var inboxStore = InboxStore()
+    @State private var presenceStore = PresenceStore()
 
     var body: some View {
         TabView {
@@ -29,9 +30,14 @@ struct MainTabView: View {
         .environment(channelStore)
         .environment(emojiStore)
         .environment(inboxStore)
+        .environment(presenceStore)
         .task {
             guard let client = auth.client else { return }
             await inboxStore.load(client: client)
+        }
+        .task {
+            guard let client = auth.client else { return }
+            await presenceStore.load(client: client, myUserId: auth.userId)
         }
         // チャンネル名は受信箱でも使うので、どのタブを先に開いても読み込まれるようにする
         .task {
@@ -57,6 +63,7 @@ struct MainTabView: View {
                 guard let client = auth.client else { continue }
                 channelStore.apply(event, myUserId: auth.userId, client: client)
                 inboxStore.apply(event, client: client)
+                presenceStore.apply(event, client: client, myUserId: auth.userId)
                 if case .serverConfigUpdated = event {
                     Task { await auth.loadServerConfig() }
                 }

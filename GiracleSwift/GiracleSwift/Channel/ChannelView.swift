@@ -69,6 +69,7 @@ struct ChannelView: View {
     @State private var pickerTarget: Message?
     /// プロフィールを開いているユーザー
     @State private var profileTarget: ProfileTarget?
+    @State private var isMembersPresented = false
 
     /// 長押しのシートに並べる、よく使う絵文字。
     /// コードは直接書かず、絵文字から引く（データ側でショートコードが変わっても追従できる）
@@ -185,6 +186,16 @@ struct ChannelView: View {
                     .frame(height: 44)
                     .glassEffect(.regular, in: .capsule)
             }
+            // 右上：メンバー一覧
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("メンバー", systemImage: "person.2") {
+                    isMembersPresented = true
+                }
+            }
+        }
+        .sheet(isPresented: $isMembersPresented) {
+            ChannelMembersView(channel: channel)
+                .presentationDetents([.medium, .large])
         }
         // チャンネル内ではタブバーを隠し、代わりに入力欄を置く
         .toolbarVisibility(.hidden, for: .tabBar)
@@ -1042,7 +1053,7 @@ private struct MessageRow: View {
     private var content: some View {
         HStack(alignment: .top, spacing: 10) {
             // URLSession.shared を使うので Cookie も自動で送られる。タップでプロフィール
-            UserIcon(url: iconURL)
+            PresenceIcon(userId: message.userId, url: iconURL)
                 .onTapGesture(perform: onTapUser)
 
             VStack(alignment: .leading, spacing: 6) {

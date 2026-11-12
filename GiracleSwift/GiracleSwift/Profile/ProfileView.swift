@@ -55,7 +55,7 @@ struct ProfileView: View {
         .frame(maxWidth: .infinity)
         .clipped()
         .overlay(alignment: .bottomLeading) {
-            UserIcon(url: baseURL?.appending(path: "user/icon/\(userId)"), size: 80)
+            PresenceIcon(userId: userId, url: baseURL?.appending(path: "user/icon/\(userId)"), size: 80)
                 .overlay(Circle().stroke(.background, lineWidth: 4))
                 .offset(x: 20, y: 40)
         }
@@ -157,6 +157,29 @@ struct UserIcon: View {
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
+    }
+}
+
+/// オンラインなら右下に緑の点が付くアイコン（Discord や Slack と同じ表し方）
+struct PresenceIcon: View {
+    let userId: String
+    let url: URL?
+    var size: CGFloat = 36
+
+    @Environment(PresenceStore.self) private var presence
+
+    var body: some View {
+        UserIcon(url: url, size: size)
+            .overlay(alignment: .bottomTrailing) {
+                if presence.isOnline(userId) {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: size * 0.3, height: size * 0.3)
+                        // 背景色の縁取りで、アイコンと点の境目を分かりやすく
+                        .overlay(Circle().stroke(.background, lineWidth: max(2, size * 0.06)))
+                        .accessibilityLabel("オンライン")
+                }
+            }
     }
 }
 

@@ -20,6 +20,9 @@ enum RealtimeEvent {
     case channelDeleted(channelId: String)
     /// サーバーの名前・紹介文などが変わった
     case serverConfigUpdated
+    /// 誰かがオンラインになった / オフラインになった
+    case userConnected(String)
+    case userDisconnected(String)
     /// 誰かのプロフィール（名前・自己紹介・BAN 状態）が変わった
     case userUpdated(User)
     /// 受信箱に通知が増えた / 既読で消えた / 全部消えた
@@ -68,6 +71,11 @@ extension RealtimeEvent {
         case "server::ConfigUpdate":
             // 中身は使わず、/server/config を取り直す
             return .serverConfigUpdated
+        // data はユーザーIdの文字列そのもの
+        case "user::Connected":
+            return (try? decoder.decode(Payload<String>.self, from: json)).map { .userConnected($0.data) }
+        case "user::Disconnected":
+            return (try? decoder.decode(Payload<String>.self, from: json)).map { .userDisconnected($0.data) }
         case "user::ProfileUpdate":
             return (try? decoder.decode(Payload<User>.self, from: json)).map { .userUpdated($0.data) }
         case "inbox::Added":

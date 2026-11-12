@@ -123,7 +123,7 @@ struct MessageInputBar: View {
                         onSelectMention(user)
                     } label: {
                         HStack(spacing: 10) {
-                            UserIcon(url: iconURL(user.id), size: 28)
+                            PresenceIcon(userId: user.id, url: iconURL(user.id), size: 28)
                             Text(user.name ?? "")
                                 .lineLimit(1)
                             if user.isBot {

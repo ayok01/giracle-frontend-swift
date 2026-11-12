@@ -27,6 +27,12 @@ struct APIClient {
         try await send(path, method: "GET", body: nil)
     }
 
+    /// クエリ文字列付きの GET（"user/list?username=..." の ? 以降を安全に組み立てる）
+    func get<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
+        let data = try await request(path, method: "GET", body: nil, query: query)
+        return try JSONDecoder.giracle().decode(APIResponse<T>.self, from: data).data
+    }
+
     func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         try await send(path, method: "POST", body: try JSONEncoder().encode(body))
     }
@@ -106,9 +112,14 @@ struct APIClient {
         _ path: String,
         method: String,
         body: Data?,
-        contentType: String = "application/json"
+        contentType: String = "application/json",
+        query: [URLQueryItem] = []
     ) async throws -> Data {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var url = baseURL.appending(path: path)
+        if !query.isEmpty {
+            url = url.appending(queryItems: query)
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         if let body {
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")

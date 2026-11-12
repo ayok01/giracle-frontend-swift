@@ -30,6 +30,10 @@ struct ChannelView: View {
     @State private var draft = ""
     /// 送信前の添付画像
     @State private var attachments: [PendingAttachment] = []
+    /// 入力中のメンション（"@名前" ⇄ "@<ユーザーId>" の変換）
+    @State private var mentionDraft = MentionDraft()
+    /// "@" 入力中に出す候補
+    @State private var mentionCandidates: [User] = []
     @State private var isSending = false
     @State private var sendError: String?
     @FocusState private var isInputFocused: Bool
@@ -141,6 +145,10 @@ struct ChannelView: View {
         // チャンネル内ではタブバーを隠し、代わりに入力欄を置く
         .toolbarVisibility(.hidden, for: .tabBar)
         .task { await load() }
+        // "@…" を打っている間、チャンネルの参加者から候補を探す（0.2 秒の debounce。Web 版と同じ）
+        .task(id: MentionDraft.query(in: draft)) {
+            await searchMentionCandidates()
+        }
         // 画面を開いている間、WebSocket のイベントを受け取る
         .task {
             for await event in realtime.events() {
@@ -329,7 +337,9 @@ struct ChannelView: View {
                 closeSheet {
                     replyTarget = nil
                     editingMessage = message
-                    draft = message.content
+                    // "@<ユーザーId>" は "@名前" に戻して入力欄に入れる
+                    mentionDraft.reset()
+                    draft = mentionDraft.decode(message.content, users: users)
                     isInputFocused = true
                 }
             }
@@ -382,6 +392,12 @@ struct ChannelView: View {
                 } : nil,
                 onRemoveAttachment: { attachment in
                     attachments.removeAll { $0.id == attachment.id }
+                },
+                mentionCandidates: mentionCandidates,
+                iconURL: iconURL(for:),
+                onSelectMention: { user in
+                    mentionDraft.insert(user, into: &draft)
+                    mentionCandidates = []
                 }
             ) {
                 Task { await send() }
@@ -492,7 +508,9 @@ struct ChannelView: View {
             await edit(editingMessage, client: client)
             return
         }
-        let text = draft
+        let rawDraft = draft
+        // 入力欄の "@名前" をサーバーの形式 "@<ユーザーId>" に変えて送る
+        let text = mentionDraft.encode(draft)
         let replyTarget = replyTarget
         let attachments = attachments
         draft = ""
@@ -535,12 +553,13 @@ struct ChannelView: View {
             withAnimation {
                 scrollPosition.scrollTo(edge: .top)
             }
+            mentionDraft.reset()
             // 自分のメッセージも「最新」として数えられるので、既読を進めておく
             await markLatestAsRead()
             await loadUsers(client: client)
         } catch {
             // 失敗したら書いた文章・返信先・画像を戻す
-            draft = text
+            draft = rawDraft
             self.replyTarget = replyTarget
             self.attachments = attachments
             sendError = error.localizedDescription
@@ -559,7 +578,7 @@ struct ChannelView: View {
     }
 
     private func edit(_ message: Message, client: APIClient) async {
-        let text = draft
+        let text = mentionDraft.encode(draft)
         isSending = true
         defer { isSending = false }
         do {
@@ -569,6 +588,7 @@ struct ChannelView: View {
             )
             // WebSocket でも届くが、返ってきた結果ですぐ反映する
             applyEdit(edit)
+            mentionDraft.reset()
             editingMessage = nil
             draft = ""
         } catch {
@@ -595,9 +615,26 @@ struct ChannelView: View {
         replyCache[edit.id]?.apply(edit)
     }
 
+    private func searchMentionCandidates() async {
+        guard let query = MentionDraft.query(in: draft), let client = auth.client else {
+            mentionCandidates = []
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        guard !Task.isCancelled else { return }
+        let found: [User]? = try? await client.get("user/list", query: [
+            URLQueryItem(name: "username", value: query),
+            URLQueryItem(name: "joinedChannel", value: channel.id),
+            URLQueryItem(name: "length", value: "10"),
+        ])
+        guard !Task.isCancelled else { return }
+        mentionCandidates = (found ?? []).filter { $0.name != nil }
+    }
+
     private func cancelReplyOrEdit() {
         if editingMessage != nil {
             draft = ""
+            mentionDraft.reset()
         }
         editingMessage = nil
         replyTarget = nil

@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// 入力欄の上に出す「返信中」「編集中」の表示
 struct InputBanner {
@@ -16,10 +17,19 @@ struct MessageInputBar: View {
     /// 外からキーボードを出し入れするためのフォーカス（ref.focus() 相当）
     var focus: FocusState<Bool>.Binding
     var onCancelBanner: () -> Void = {}
+    /// 送信前の添付画像
+    var attachments: [PendingAttachment] = []
+    /// 写真が選ばれた（nil なら写真ボタンを出さない。編集中など）
+    var onPickPhotos: (([PhotosPickerItem]) -> Void)?
+    var onRemoveAttachment: (PendingAttachment) -> Void = { _ in }
     let onSend: () -> Void
 
+    /// 写真アプリで選んだもの。選ばれたら親に渡してすぐ空にする
+    @State private var photoItems: [PhotosPickerItem] = []
+
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (hasText || !attachments.isEmpty) && !isSending
     }
 
     var body: some View {
@@ -50,7 +60,26 @@ struct MessageInputBar: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
+                if !attachments.isEmpty {
+                    attachmentPreviews
+                }
+
                 HStack(alignment: .bottom, spacing: 8) {
+                    if let onPickPhotos {
+                        PhotosPicker(selection: $photoItems, maxSelectionCount: 4, matching: .images) {
+                            Image(systemName: "photo")
+                                .font(.body.bold())
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                        .onChange(of: photoItems) { _, items in
+                            guard !items.isEmpty else { return }
+                            onPickPhotos(items)
+                            photoItems = []
+                        }
+                    }
+
                     // axis: .vertical で、長文なら縦に伸びる（最大6行）
                     TextField("メッセージを入力", text: $text, axis: .vertical)
                         .lineLimit(1...6)
@@ -73,6 +102,33 @@ struct MessageInputBar: View {
         .padding(.horizontal)
         .padding(.bottom, 8)
         .animation(.snappy, value: banner?.title)
+        .animation(.snappy, value: attachments.map(\.id))
+    }
+
+    /// 送信前の画像を横に並べる。右上の × で外せる
+    private var attachmentPreviews: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(attachments) { attachment in
+                    attachment.thumbnail
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 64)
+                        .clipShape(.rect(cornerRadius: 12))
+                        .overlay(alignment: .topTrailing) {
+                            Button("外す", systemImage: "xmark.circle.fill") {
+                                onRemoveAttachment(attachment)
+                            }
+                            .labelStyle(.iconOnly)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.6))
+                            .padding(4)
+                        }
+                }
+            }
+            .padding(8)
+        }
+        .glassEffect(.regular, in: .rect(cornerRadius: 20))
     }
 }
 

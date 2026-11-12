@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// チャンネルのメッセージ画面
 struct ChannelView: View {
@@ -26,6 +27,8 @@ struct ChannelView: View {
     @State private var safeAreaInsets = EdgeInsets()
 
     @State private var draft = ""
+    /// 送信前の添付画像
+    @State private var attachments: [PendingAttachment] = []
     @State private var isSending = false
     @State private var sendError: String?
     @FocusState private var isInputFocused: Bool
@@ -353,7 +356,15 @@ struct ChannelView: View {
                 isSending: isSending,
                 banner: inputBanner,
                 focus: $isInputFocused,
-                onCancelBanner: cancelReplyOrEdit
+                onCancelBanner: cancelReplyOrEdit,
+                attachments: attachments,
+                // 編集中は画像を足せない（編集 API は本文しか変えられない）
+                onPickPhotos: editingMessage == nil ? { items in
+                    Task { await addAttachments(from: items) }
+                } : nil,
+                onRemoveAttachment: { attachment in
+                    attachments.removeAll { $0.id == attachment.id }
+                }
             ) {
                 Task { await send() }
             }
@@ -464,15 +475,38 @@ struct ChannelView: View {
         }
         let text = draft
         let replyTarget = replyTarget
+        let attachments = attachments
         draft = ""
         self.replyTarget = nil
+        self.attachments = []
         isSending = true
         defer { isSending = false }
         do {
+            // 1. 画像を1枚ずつアップロードして fileId をもらう
+            var fileIds: [String] = []
+            for attachment in attachments {
+                let uploaded: UploadedFile = try await client.upload(
+                    "message/file/upload",
+                    fields: ["channelId": channel.id],
+                    file: attachment.data,
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType
+                )
+                fileIds.append(uploaded.id)
+                // 縦横サイズは手元で分かっているので、表示用に覚えておく（ガタつき防止）
+                imageDimensions[uploaded.id] = ImageDimension(width: attachment.width, height: attachment.height)
+            }
+
+            // 2. fileIds を付けてメッセージを送る
             // サーバーが保存したメッセージを返すので、それを一覧の最後に足す
             let sent: Message = try await client.post(
                 "message/send",
-                body: SendRequest(channelId: channel.id, message: text, replyingMessageId: replyTarget?.id)
+                body: SendRequest(
+                    channelId: channel.id,
+                    message: text,
+                    replyingMessageId: replyTarget?.id,
+                    fileIds: fileIds.isEmpty ? nil : fileIds
+                )
             )
             // WebSocket の方が先に届いていることもあるので重複チェック
             if !messages.contains(where: { $0.id == sent.id }) {
@@ -486,10 +520,22 @@ struct ChannelView: View {
             await markLatestAsRead()
             await loadUsers(client: client)
         } catch {
-            // 失敗したら書いた文章と返信先を戻す
+            // 失敗したら書いた文章・返信先・画像を戻す
             draft = text
             self.replyTarget = replyTarget
+            self.attachments = attachments
             sendError = error.localizedDescription
+        }
+    }
+
+    /// 写真アプリで選ばれたものを、送れる形にして添付に足す（最大4枚）
+    private func addAttachments(from items: [PhotosPickerItem]) async {
+        for item in items where attachments.count < 4 {
+            if let attachment = await PendingAttachment.load(from: item) {
+                attachments.append(attachment)
+            } else {
+                sendError = "画像を読み込めませんでした"
+            }
         }
     }
 
@@ -640,6 +686,21 @@ private struct SendRequest: Encodable {
     let message: String
     /// 返信先。nil なら JSON に含めない
     let replyingMessageId: String?
+    /// 添付ファイル。nil なら JSON に含めない
+    let fileIds: [String]?
+}
+
+/// /message/file/upload の data。
+/// バックエンドは insertFile の `.returning({ id })` をそのまま返すので `{ "fileId": { "id": "…" } }` の形になる
+/// （Web 版も result.data.fileId.id で取り出している）
+private struct UploadedFile: Decodable {
+    struct FileId: Decodable {
+        let id: String
+    }
+
+    private let fileId: FileId
+
+    var id: String { fileId.id }
 }
 
 private struct ReactionRequest: Encodable {

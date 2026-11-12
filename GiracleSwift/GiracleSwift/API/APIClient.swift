@@ -45,17 +45,49 @@ struct APIClient {
         _ = try await request(path, method: "DELETE", body: try JSONEncoder().encode(body))
     }
 
+    /// ファイルをフォーム形式（multipart/form-data）で送る。
+    /// Web の `const form = new FormData(); form.append("file", file)` を手で組み立てているのと同じ
+    func upload<T: Decodable>(
+        _ path: String,
+        fields: [String: String],
+        file: Data,
+        fileName: String,
+        mimeType: String
+    ) async throws -> T {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        for (name, value) in fields {
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\nContent-Type: \(mimeType)\r\n\r\n".utf8))
+        body.append(file)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+
+        let data = try await request(
+            path,
+            method: "POST",
+            body: body,
+            contentType: "multipart/form-data; boundary=\(boundary)"
+        )
+        return try JSONDecoder.giracle().decode(APIResponse<T>.self, from: data).data
+    }
+
     private func send<T: Decodable>(_ path: String, method: String, body: Data?) async throws -> T {
         let data = try await request(path, method: method, body: body)
         return try JSONDecoder.giracle().decode(APIResponse<T>.self, from: data).data
     }
 
     /// 通信してステータスを確認し、レスポンス本文を返す
-    private func request(_ path: String, method: String, body: Data?) async throws -> Data {
+    private func request(
+        _ path: String,
+        method: String,
+        body: Data?,
+        contentType: String = "application/json"
+    ) async throws -> Data {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
 

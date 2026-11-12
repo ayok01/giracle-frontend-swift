@@ -9,6 +9,7 @@ struct ChannelView: View {
     @Environment(RealtimeClient.self) private var realtime
     @Environment(ChannelStore.self) private var channelStore
     @Environment(EmojiStore.self) private var emojiStore
+    @Environment(InboxStore.self) private var inbox
 
     /// 古い順（画面の上から下へ並べる順）
     @State private var messages: [Message] = []
@@ -439,9 +440,10 @@ struct ChannelView: View {
 
     /// いちばん新しいメッセージまで読んだことにする（参加中のチャンネルだけ）
     private func markLatestAsRead() async {
-        guard let client = auth.client, let newest = messages.last,
-              channelStore.isJoined(channel.id)
-        else { return }
+        guard let client = auth.client else { return }
+        // 表示したメッセージのうち、受信箱にあるもの（自分へのメンション・返信）も既読にする
+        await inbox.readShown(messageIds: messages.map(\.id), client: client)
+        guard let newest = messages.last, channelStore.isJoined(channel.id) else { return }
         await channelStore.markAsRead(newest, client: client)
     }
 

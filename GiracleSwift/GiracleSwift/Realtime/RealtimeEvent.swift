@@ -12,6 +12,10 @@ enum RealtimeEvent {
     case messageDeleted(messageId: String, channelId: String)
     case reactionAdded(Reaction)
     case reactionDeleted(Reaction)
+    /// 受信箱に通知が増えた / 既読で消えた / 全部消えた
+    case inboxAdded(InboxItem)
+    case inboxDeleted(messageId: String)
+    case inboxCleared
     /// 自分の既読時刻が更新された（他の端末で読んだときも届く）
     case readTimeUpdated(channelId: String)
 }
@@ -43,6 +47,12 @@ extension RealtimeEvent {
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionAdded($0.data) }
         case "message::DeleteReaction":
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionDeleted($0.data) }
+        case "inbox::Added":
+            return (try? decoder.decode(Payload<InboxAddedPayload>.self, from: json)).map { .inboxAdded($0.data.item) }
+        case "inbox::Deleted":
+            return (try? decoder.decode(Payload<InboxDeleted>.self, from: json)).map { .inboxDeleted(messageId: $0.data.messageId) }
+        case "inbox::Clear":
+            return .inboxCleared
         case "message::ReadTimeUpdated":
             return (try? decoder.decode(Payload<ReadTimeUpdated>.self, from: json)).map {
                 .readTimeUpdated(channelId: $0.data.channelId)
@@ -51,6 +61,10 @@ extension RealtimeEvent {
             return nil
         }
     }
+}
+
+private struct InboxDeleted: Decodable {
+    let messageId: String
 }
 
 private struct ReadTimeUpdated: Decodable {

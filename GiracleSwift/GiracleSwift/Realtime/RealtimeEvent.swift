@@ -10,6 +10,8 @@ enum RealtimeEvent {
     /// 編集で、本文などの一部だけが届いた
     case messageEdited(MessageEdit)
     case messageDeleted(messageId: String, channelId: String)
+    case reactionAdded(Reaction)
+    case reactionDeleted(Reaction)
     /// 自分の既読時刻が更新された（他の端末で読んだときも届く）
     case readTimeUpdated(channelId: String)
 }
@@ -37,6 +39,10 @@ extension RealtimeEvent {
             return (try? decoder.decode(Payload<MessageDeleted>.self, from: json)).map {
                 .messageDeleted(messageId: $0.data.messageId, channelId: $0.data.channelId)
             }
+        case "message::AddReaction":
+            return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionAdded($0.data) }
+        case "message::DeleteReaction":
+            return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionDeleted($0.data) }
         case "message::ReadTimeUpdated":
             return (try? decoder.decode(Payload<ReadTimeUpdated>.self, from: json)).map {
                 .readTimeUpdated(channelId: $0.data.channelId)

@@ -6,6 +6,7 @@ struct MainTabView: View {
     @Environment(RealtimeClient.self) private var realtime
     /// サインインごとに作り直されるよう、この画面で持つ
     @State private var channelStore = ChannelStore()
+    @State private var emojiStore = EmojiStore()
 
     var body: some View {
         TabView {
@@ -28,6 +29,15 @@ struct MainTabView: View {
         // 下にスクロールするとタブバーが小さくなる
         .tabBarMinimizeBehavior(.onScrollDown)
         .environment(channelStore)
+        .environment(emojiStore)
+        // 絵文字データ（Web 版と同じ CDN）とカスタム絵文字を読み込む
+        .task {
+            await emojiStore.load()
+        }
+        .task {
+            guard let client = auth.client else { return }
+            await emojiStore.loadCustomEmojis(client: client)
+        }
         // サインイン中はずっと WebSocket につなぐ。サインアウトでこの画面が消えると切れる
         .task {
             guard let baseURL = auth.client?.baseURL else { return }

@@ -36,6 +36,10 @@ struct APIClient {
         _ = try await request(path, method: "POST", body: try JSONEncoder().encode(body))
     }
 
+    func delete<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+        try await send(path, method: "DELETE", body: try JSONEncoder().encode(body))
+    }
+
     /// 結果の data を使わない DELETE（このバックエンドは DELETE でも JSON の body を受け取る）
     func delete(_ path: String, body: some Encodable) async throws {
         _ = try await request(path, method: "DELETE", body: try JSONEncoder().encode(body))

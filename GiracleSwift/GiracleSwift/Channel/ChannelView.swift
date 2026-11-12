@@ -7,6 +7,7 @@ struct ChannelView: View {
     @Environment(AuthStore.self) private var auth
     @Environment(RealtimeClient.self) private var realtime
     @Environment(ChannelStore.self) private var channelStore
+    @Environment(EmojiStore.self) private var emojiStore
 
     /// 古い順（画面の上から下へ並べる順）
     @State private var messages: [Message] = []
@@ -39,6 +40,12 @@ struct ChannelView: View {
     @State private var actionTarget: Message?
     /// シートが閉じきってから実行する操作（キーボードを出す・確認を出すなどはシートが閉じてからでないと効かない）
     @State private var pendingAction: (() -> Void)?
+    /// 絵文字ピッカーを開いているメッセージ
+    @State private var pickerTarget: Message?
+
+    /// 長押しのシートに並べる、よく使う絵文字。
+    /// コードは直接書かず、絵文字から引く（データ側でショートコードが変わっても追従できる）
+    private static let quickReactionEmojis = ["👍", "❤️", "😂", "🎉", "👀", "🙏"]
     /// 返信先が一覧に読み込まれていないとき用に、個別に取ってきたメッセージ
     @State private var replyCache: [String: Message] = [:]
 
@@ -165,12 +172,23 @@ struct ChannelView: View {
                     messageRow(message)
                         .allowsHitTesting(false)
                 }
+                if channelStore.isJoined(channel.id) {
+                    Section {
+                        quickReactions(for: message)
+                    }
+                }
                 Section {
                     messageMenu(for: message)
                 }
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        // すべての絵文字から選ぶピッカー
+        .sheet(item: $pickerTarget) { message in
+            EmojiPickerView { code in
+                Task { await toggleReaction(code, on: message) }
+            }
         }
         // 長押しが決まったら「ブルッ」と振動させる
         .sensoryFeedback(.impact, trigger: actionTarget?.id) { _, newValue in
@@ -200,8 +218,69 @@ struct ChannelView: View {
             iconURL: iconURL(for: message.userId),
             reply: replyPreview(for: message),
             imageDimensions: imageDimensions,
-            baseURL: auth.client?.baseURL
+            baseURL: auth.client?.baseURL,
+            onToggleReaction: { code in
+                Task { await toggleReaction(code, on: message) }
+            }
         )
+    }
+
+    /// 長押しのシートの、よく使う絵文字の列と「その他」ボタン
+    private func quickReactions(for message: Message) -> some View {
+        HStack {
+            ForEach(Self.quickReactionEmojis, id: \.self) { emoji in
+                if let code = emojiStore.code(for: emoji) {
+                    Button {
+                        closeSheet {
+                            Task { await toggleReaction(code, on: message) }
+                        }
+                    } label: {
+                        Text(emoji)
+                            .font(.title2)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Button("その他", systemImage: "face.smiling") {
+                closeSheet { pickerTarget = message }
+            }
+            .labelStyle(.iconOnly)
+            .font(.title2)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// 自分が付けていれば外し、付けていなければ付ける（Web 版と同じ動き）
+    private func toggleReaction(_ code: String, on message: Message) async {
+        guard let client = auth.client else { return }
+        // 最新の状態で判定する（シートを開いている間に変わっているかもしれない）
+        let current = messages.first { $0.id == message.id } ?? message
+        let body = ReactionRequest(messageId: message.id, channelId: message.channelId, emojiCode: code)
+        do {
+            if current.reactionSummary?.contains(where: { $0.emojiCode == code && $0.includingYou }) == true {
+                let reaction: Reaction = try await client.delete("message/delete-emoji-reaction", body: body)
+                updateMessage(message.id) { $0.removeReaction(reaction, myUserId: auth.userId) }
+            } else {
+                guard current.myReactionCount < 10 else {
+                    sendError = "同一ユーザーによるリアクションは10個までです。"
+                    return
+                }
+                let reaction: Reaction = try await client.post("message/emoji-reaction", body: body)
+                updateMessage(message.id) { $0.addReaction(reaction, myUserId: auth.userId) }
+            }
+        } catch {
+            sendError = error.localizedDescription
+        }
+    }
+
+    /// 一覧の中の1件を書き換える
+    private func updateMessage(_ id: String, _ change: (inout Message) -> Void) {
+        if let index = messages.firstIndex(where: { $0.id == id }) {
+            change(&messages[index])
+        }
     }
 
     /// 操作のシートのボタン
@@ -506,6 +585,11 @@ struct ChannelView: View {
             }
         case .messageEdited(let edit) where edit.channelId == channel.id:
             applyEdit(edit)
+        // 自分のリアクションは API の返り値ですでに反映しているので、他の人の分だけ反映する
+        case .reactionAdded(let reaction) where reaction.channelId == channel.id && reaction.userId != auth.userId:
+            updateMessage(reaction.messageId) { $0.addReaction(reaction, myUserId: auth.userId) }
+        case .reactionDeleted(let reaction) where reaction.channelId == channel.id && reaction.userId != auth.userId:
+            updateMessage(reaction.messageId) { $0.removeReaction(reaction, myUserId: auth.userId) }
         case .messageDeleted(let messageId, let channelId) where channelId == channel.id:
             messages.removeAll { $0.id == messageId }
         case .connected:
@@ -558,6 +642,12 @@ private struct SendRequest: Encodable {
     let replyingMessageId: String?
 }
 
+private struct ReactionRequest: Encodable {
+    let messageId: String
+    let channelId: String
+    let emojiCode: String
+}
+
 private struct EditRequest: Encodable {
     let messageId: String
     let message: String
@@ -577,6 +667,7 @@ private struct MessageRow: View {
     let reply: ReplyPreview?
     let imageDimensions: [String: ImageDimension]
     let baseURL: URL?
+    let onToggleReaction: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -621,6 +712,9 @@ private struct MessageRow: View {
                     Text(text)
                 }
                 MessageAttachments(message: message, imageDimensions: imageDimensions, baseURL: baseURL)
+                if let reactions = message.reactionSummary, !reactions.isEmpty {
+                    ReactionBar(reactions: reactions, onToggle: onToggleReaction)
+                }
             }
         }
     }

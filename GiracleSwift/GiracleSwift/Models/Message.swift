@@ -16,9 +16,11 @@ struct Message: Decodable, Identifiable, Hashable {
     let files: [MessageFile]?
     /// URL プレビュー（送信直後は空で、生成後に message::UpdateMessage で届く）
     let urlPreviews: [UrlPreview]?
+    /// リアクションの集計（履歴取得時に含まれる。リアクションの増減で書き換わるので var）
+    var reactionSummary: [ReactionSummary]?
 
     enum CodingKeys: String, CodingKey {
-        case id, content, isSystemMessage, isEdited, userId, channelId, createdAt, replyingMessageId
+        case id, content, isSystemMessage, isEdited, userId, channelId, createdAt, replyingMessageId, reactionSummary
         case files = "MessageFileAttached"
         case urlPreviews = "MessageUrlPreview"
     }
@@ -38,6 +40,54 @@ extension Message {
     mutating func apply(_ edit: MessageEdit) {
         content = edit.content
         isEdited = edit.isEdited
+    }
+}
+
+/// 絵文字ごとのリアクション数
+struct ReactionSummary: Decodable, Hashable {
+    let emojiCode: String
+    var count: Int
+    var includingYou: Bool
+}
+
+/// リアクション1件（/message/emoji-reaction の返り値と、WebSocket の AddReaction / DeleteReaction）
+struct Reaction: Decodable {
+    let messageId: String
+    let channelId: String
+    let userId: String
+    let emojiCode: String
+}
+
+extension Message {
+    /// 自分が付けたリアクションの数（1メッセージ10個まで）
+    var myReactionCount: Int {
+        (reactionSummary ?? []).filter(\.includingYou).count
+    }
+
+    mutating func addReaction(_ reaction: Reaction, myUserId: String?) {
+        var summary = reactionSummary ?? []
+        let isMine = reaction.userId == myUserId
+        if let index = summary.firstIndex(where: { $0.emojiCode == reaction.emojiCode }) {
+            summary[index].count += 1
+            summary[index].includingYou = summary[index].includingYou || isMine
+        } else {
+            summary.append(ReactionSummary(emojiCode: reaction.emojiCode, count: 1, includingYou: isMine))
+        }
+        reactionSummary = summary
+    }
+
+    mutating func removeReaction(_ reaction: Reaction, myUserId: String?) {
+        guard var summary = reactionSummary,
+              let index = summary.firstIndex(where: { $0.emojiCode == reaction.emojiCode })
+        else { return }
+        summary[index].count -= 1
+        if reaction.userId == myUserId {
+            summary[index].includingYou = false
+        }
+        if summary[index].count <= 0 {
+            summary.remove(at: index)
+        }
+        reactionSummary = summary
     }
 }
 

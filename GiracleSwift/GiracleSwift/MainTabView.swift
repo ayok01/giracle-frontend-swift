@@ -24,6 +24,10 @@ struct MainTabView: View {
             Tab("設定", systemImage: "gearshape") {
                 SettingsView()
             }
+            // 検索タブ。role: .search にすると、タブバーの右端に分かれた丸いガラスのボタンになる
+            Tab("検索", systemImage: "magnifyingglass", role: .search) {
+                SearchView()
+            }
         }
         // 下にスクロールするとタブバーが小さくなる
         .tabBarMinimizeBehavior(.onScrollDown)

@@ -126,12 +126,15 @@ struct InboxView: View {
         Button {
             open(item)
         } label: {
-            InboxRowView(
-                item: item,
+            MessageSummaryRow(
+                message: item.message,
                 user: users[item.message.userId],
                 channelName: channelName(item.message.channelId),
                 text: formatter.format(item.message.content),
-                iconURL: auth.client?.baseURL.appending(path: "user/icon/\(item.message.userId)")
+                iconURL: auth.client?.baseURL.appending(path: "user/icon/\(item.message.userId)"),
+                label: item.kind == .reply
+                    ? ("返信", "arrowshape.turn.up.left.fill")
+                    : ("メンション", "at")
             )
         }
         .buttonStyle(.plain)
@@ -180,52 +183,5 @@ struct InboxView: View {
         if Calendar.current.isDateInToday(day) { return "今日" }
         if Calendar.current.isDateInYesterday(day) { return "昨日" }
         return day.formatted(.dateTime.month().day().weekday())
-    }
-}
-
-/// 受信箱の1行
-private struct InboxRowView: View {
-    let item: InboxItem
-    let user: User?
-    let channelName: String
-    let text: AttributedString
-    let iconURL: URL?
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            AsyncImage(url: iconURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Color.secondary.opacity(0.2)
-            }
-            .frame(width: 36, height: 36)
-            .clipShape(.circle)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Label(
-                        item.kind == .reply ? "返信" : "メンション",
-                        systemImage: item.kind == .reply ? "arrowshape.turn.up.left.fill" : "at"
-                    )
-                    .font(.caption.bold())
-                    .foregroundStyle(.tint)
-                    Text(channelName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(item.message.createdAt, format: .dateTime.hour().minute())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text(user?.name ?? "…")
-                    .font(.subheadline.bold())
-                Text(text)
-                    .font(.subheadline)
-                    .lineLimit(3)
-            }
-        }
-        .padding(.vertical, 4)
-        .contentShape(.rect)
     }
 }

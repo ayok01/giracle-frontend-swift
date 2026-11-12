@@ -12,6 +12,8 @@ struct MainTabView: View {
             Tab("チャンネル", systemImage: "bubble.left.and.bubble.right") {
                 ChannelListView()
             }
+            // 未読のあるチャンネルの数をタブに赤い数字で出す（0 のときは出ない）
+            .badge(channelStore.unreadIds.count)
             Tab("受信箱", systemImage: "tray") {
                 // 後のステップで作る
                 NavigationStack {
@@ -30,6 +32,13 @@ struct MainTabView: View {
         .task {
             guard let baseURL = auth.client?.baseURL else { return }
             await realtime.run(baseURL: baseURL)
+        }
+        // どの画面を開いていても未読の印を更新できるよう、ここでイベントを受け取る
+        .task {
+            for await event in realtime.events() {
+                guard let client = auth.client else { continue }
+                channelStore.apply(event, myUserId: auth.userId, client: client)
+            }
         }
     }
 }

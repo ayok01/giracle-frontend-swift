@@ -5,9 +5,13 @@ enum RealtimeEvent {
     /// 接続できた（つなぎ直しのときも届く）
     case connected
     case messageSent(Message)
-    /// 編集のほか、URL プレビューの更新でも届く
+    /// URL プレビューの更新などで、メッセージ全体が届いた
     case messageUpdated(Message)
+    /// 編集で、本文などの一部だけが届いた
+    case messageEdited(MessageEdit)
     case messageDeleted(messageId: String, channelId: String)
+    /// 自分の既読時刻が更新された（他の端末で読んだときも届く）
+    case readTimeUpdated(channelId: String)
 }
 
 extension RealtimeEvent {
@@ -23,15 +27,28 @@ extension RealtimeEvent {
         case "message::SendMessage":
             return (try? decoder.decode(Payload<Message>.self, from: json)).map { .messageSent($0.data) }
         case "message::UpdateMessage":
-            return (try? decoder.decode(Payload<Message>.self, from: json)).map { .messageUpdated($0.data) }
+            // 同じ signal でも、メッセージ全体が来る場合と編集の一部だけが来る場合がある。
+            // まず全体として読み、だめなら編集の形で読む
+            if let full = try? decoder.decode(Payload<Message>.self, from: json) {
+                return .messageUpdated(full.data)
+            }
+            return (try? decoder.decode(Payload<MessageEdit>.self, from: json)).map { .messageEdited($0.data) }
         case "message::MessageDeleted":
             return (try? decoder.decode(Payload<MessageDeleted>.self, from: json)).map {
                 .messageDeleted(messageId: $0.data.messageId, channelId: $0.data.channelId)
+            }
+        case "message::ReadTimeUpdated":
+            return (try? decoder.decode(Payload<ReadTimeUpdated>.self, from: json)).map {
+                .readTimeUpdated(channelId: $0.data.channelId)
             }
         default:
             return nil
         }
     }
+}
+
+private struct ReadTimeUpdated: Decodable {
+    let channelId: String
 }
 
 private struct Signal: Decodable {

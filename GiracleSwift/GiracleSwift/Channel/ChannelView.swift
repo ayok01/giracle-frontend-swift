@@ -12,6 +12,8 @@ struct ChannelView: View {
     @State private var messages: [Message] = []
     /// userId → User。名前を表示するために取ってきたユーザーを覚えておく
     @State private var users: [String: User] = [:]
+    /// 画像ファイルId → 縦横サイズ（履歴を読み込むたびに足していく）
+    @State private var imageDimensions: [String: ImageDimension] = [:]
     @State private var hasLoaded = false
     @State private var errorMessage: String?
     /// いちばん古いメッセージまで読み込んだか
@@ -25,6 +27,20 @@ struct ChannelView: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var sendError: String?
+    @FocusState private var isInputFocused: Bool
+
+    /// 返信しようとしているメッセージ
+    @State private var replyTarget: Message?
+    /// 編集しているメッセージ
+    @State private var editingMessage: Message?
+    /// 削除の確認を出しているメッセージ
+    @State private var deleteTarget: Message?
+    /// 長押しされて操作のシートを出しているメッセージ
+    @State private var actionTarget: Message?
+    /// シートが閉じきってから実行する操作（キーボードを出す・確認を出すなどはシートが閉じてからでないと効かない）
+    @State private var pendingAction: (() -> Void)?
+    /// 返信先が一覧に読み込まれていないとき用に、個別に取ってきたメッセージ
+    @State private var replyCache: [String: Message] = [:]
 
     private var formatter: MessageFormatter {
         MessageFormatter(
@@ -47,12 +63,12 @@ struct ChannelView: View {
                         if let system = message.systemContent {
                             SystemMessageRow(content: system, user: users[system.targetUserId])
                         } else {
-                            MessageRow(
-                                message: message,
-                                text: formatter.format(message.content),
-                                user: users[message.userId],
-                                iconURL: iconURL(for: message.userId)
-                            )
+                            messageRow(message)
+                                // 長押しで操作のシートを出す。
+                                // 標準の contextMenu は反転した一覧だと浮かび上がる瞬間に裏返るため使わない
+                                .onLongPressGesture {
+                                    actionTarget = message
+                                }
                         }
                     }
                     // 一覧ごと反転しているので、各行はもう一度反転して元の向きに戻す
@@ -139,13 +155,127 @@ struct ChannelView: View {
         } message: {
             Text(sendError ?? "")
         }
+        // 長押しで出る操作のシート
+        .sheet(item: $actionTarget, onDismiss: {
+            pendingAction?()
+            pendingAction = nil
+        }) { message in
+            List {
+                Section {
+                    messageRow(message)
+                        .allowsHitTesting(false)
+                }
+                Section {
+                    messageMenu(for: message)
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        // 長押しが決まったら「ブルッ」と振動させる
+        .sensoryFeedback(.impact, trigger: actionTarget?.id) { _, newValue in
+            newValue != nil
+        }
+        // 削除の確認。confirmationDialog は付けた画面の位置から吹き出しで出るため、
+        // 反転したスクロールだと位置がずれる。常に画面中央に出る alert を使う
+        .alert(
+            "メッセージを削除しますか？",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            presenting: deleteTarget
+        ) { message in
+            Button("削除", role: .destructive) {
+                Task { await delete(message) }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: { _ in
+            Text("この操作は取り消せません")
+        }
+    }
+
+    private func messageRow(_ message: Message) -> some View {
+        MessageRow(
+            message: message,
+            text: formatter.format(message.content),
+            user: users[message.userId],
+            iconURL: iconURL(for: message.userId),
+            reply: replyPreview(for: message),
+            imageDimensions: imageDimensions,
+            baseURL: auth.client?.baseURL
+        )
+    }
+
+    /// 操作のシートのボタン
+    @ViewBuilder
+    private func messageMenu(for message: Message) -> some View {
+        let isJoined = channelStore.isJoined(channel.id)
+        let isMine = message.userId == auth.userId
+
+        if isJoined {
+            Button("返信", systemImage: "arrowshape.turn.up.left") {
+                closeSheet {
+                    editingMessage = nil
+                    replyTarget = message
+                    isInputFocused = true
+                }
+            }
+        }
+        Button("コピー", systemImage: "doc.on.doc") {
+            // @<userId> などは名前に置き換えた、見たままの文字をコピーする
+            UIPasteboard.general.string = plainText(of: message)
+            closeSheet {}
+        }
+        if isJoined, isMine {
+            Button("編集", systemImage: "pencil") {
+                closeSheet {
+                    replyTarget = nil
+                    editingMessage = message
+                    draft = message.content
+                    isInputFocused = true
+                }
+            }
+        }
+        if isMine {
+            Button("削除", systemImage: "trash", role: .destructive) {
+                closeSheet {
+                    deleteTarget = message
+                }
+            }
+        }
+    }
+
+    /// シートを閉じ、閉じきってから action を実行する
+    private func closeSheet(then action: @escaping () -> Void) {
+        pendingAction = action
+        actionTarget = nil
+    }
+
+    /// 入力欄の上に出す「返信中」「編集中」
+    private var inputBanner: InputBanner? {
+        if let editingMessage {
+            return InputBanner(systemImage: "pencil", title: "メッセージを編集", excerpt: plainText(of: editingMessage))
+        }
+        if let replyTarget {
+            let name = users[replyTarget.userId]?.name ?? "…"
+            return InputBanner(
+                systemImage: "arrowshape.turn.up.left",
+                title: "\(name) さんに返信",
+                excerpt: plainText(of: replyTarget)
+            )
+        }
+        return nil
     }
 
     /// 参加済みなら入力欄、未参加なら参加ボタン
     @ViewBuilder
     private var bottomBar: some View {
         if channelStore.isJoined(channel.id) {
-            MessageInputBar(text: $draft, isSending: isSending) {
+            MessageInputBar(
+                text: $draft,
+                isSending: isSending,
+                banner: inputBanner,
+                focus: $isInputFocused,
+                onCancelBanner: cancelReplyOrEdit
+            ) {
                 Task { await send() }
             }
         } else if channelStore.hasLoaded {
@@ -167,8 +297,10 @@ struct ChannelView: View {
                 body: HistoryRequest(direction: .older)
             )
             messages = result.history.reversed()
+            imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
             atTop = result.atTop
             errorMessage = nil
+            await markLatestAsRead()
             await loadUsers(client: client)
         } catch {
             errorMessage = error.localizedDescription
@@ -188,6 +320,7 @@ struct ChannelView: View {
                 body: HistoryRequest(direction: .older, messageIdFrom: oldest.id)
             )
             merge(result.history)
+            imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
             atTop = result.atTop
             await loadUsers(client: client)
         } catch {
@@ -205,12 +338,21 @@ struct ChannelView: View {
             )
             if result.atEnd {
                 merge(result.history)
+                imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
                 await loadUsers(client: client)
             } else {
                 // 30件より多く取りこぼしたので、最新から読み直す
                 await load()
             }
         } catch {}
+    }
+
+    /// いちばん新しいメッセージまで読んだことにする（参加中のチャンネルだけ）
+    private func markLatestAsRead() async {
+        guard let client = auth.client, let newest = messages.last,
+              channelStore.isJoined(channel.id)
+        else { return }
+        await channelStore.markAsRead(newest, client: client)
     }
 
     /// 取得したメッセージを今の一覧に混ぜる。
@@ -223,9 +365,11 @@ struct ChannelView: View {
         messages = byId.values.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
-    /// まだ知らないユーザーの情報をまとめて取ってくる
+    /// 返信先と、まだ知らないユーザーの情報をまとめて取ってくる
     private func loadUsers(client: APIClient) async {
-        let unknownIds = Set(messages.flatMap(\.relatedUserIds)).subtracting(users.keys)
+        await loadReplies(client: client)
+        let allMessages = messages + Array(replyCache.values)
+        let unknownIds = Set(allMessages.flatMap(\.relatedUserIds)).subtracting(users.keys)
         for userId in unknownIds {
             if let user: User = try? await client.get("user/info/\(userId)") {
                 users[userId] = user
@@ -235,15 +379,21 @@ struct ChannelView: View {
 
     private func send() async {
         guard let client = auth.client else { return }
+        if let editingMessage {
+            await edit(editingMessage, client: client)
+            return
+        }
         let text = draft
+        let replyTarget = replyTarget
         draft = ""
+        self.replyTarget = nil
         isSending = true
         defer { isSending = false }
         do {
             // サーバーが保存したメッセージを返すので、それを一覧の最後に足す
             let sent: Message = try await client.post(
                 "message/send",
-                body: SendRequest(channelId: channel.id, message: text)
+                body: SendRequest(channelId: channel.id, message: text, replyingMessageId: replyTarget?.id)
             )
             // WebSocket の方が先に届いていることもあるので重複チェック
             if !messages.contains(where: { $0.id == sent.id }) {
@@ -253,12 +403,90 @@ struct ChannelView: View {
             withAnimation {
                 scrollPosition.scrollTo(edge: .top)
             }
+            // 自分のメッセージも「最新」として数えられるので、既読を進めておく
+            await markLatestAsRead()
             await loadUsers(client: client)
         } catch {
-            // 失敗したら書いた文章を戻す
+            // 失敗したら書いた文章と返信先を戻す
             draft = text
+            self.replyTarget = replyTarget
             sendError = error.localizedDescription
         }
+    }
+
+    private func edit(_ message: Message, client: APIClient) async {
+        let text = draft
+        isSending = true
+        defer { isSending = false }
+        do {
+            let edit: MessageEdit = try await client.post(
+                "message/edit",
+                body: EditRequest(messageId: message.id, message: text)
+            )
+            // WebSocket でも届くが、返ってきた結果ですぐ反映する
+            applyEdit(edit)
+            editingMessage = nil
+            draft = ""
+        } catch {
+            sendError = error.localizedDescription
+        }
+    }
+
+    private func delete(_ message: Message) async {
+        guard let client = auth.client else { return }
+        do {
+            try await client.delete("message/delete", body: ["messageId": message.id])
+            // WebSocket でも消えるが、すぐ反映させる
+            messages.removeAll { $0.id == message.id }
+        } catch {
+            sendError = error.localizedDescription
+        }
+    }
+
+    /// 編集の結果を一覧（と返信先のキャッシュ）に反映する
+    private func applyEdit(_ edit: MessageEdit) {
+        if let index = messages.firstIndex(where: { $0.id == edit.id }) {
+            messages[index].apply(edit)
+        }
+        replyCache[edit.id]?.apply(edit)
+    }
+
+    private func cancelReplyOrEdit() {
+        if editingMessage != nil {
+            draft = ""
+        }
+        editingMessage = nil
+        replyTarget = nil
+    }
+
+    /// 返信先の表示に使う「返信先メッセージとその送信者」
+    private func replyPreview(for message: Message) -> ReplyPreview? {
+        guard let replyId = message.replyingMessageId else { return nil }
+        let target = messages.first { $0.id == replyId } ?? replyCache[replyId]
+        return ReplyPreview(
+            name: target.flatMap { users[$0.userId]?.name },
+            excerpt: target.map { plainText(of: $0) } ?? "読み込み中…"
+        )
+    }
+
+    /// 返信先が一覧に無ければ個別に取ってくる（古すぎて読み込んでいない場合など）
+    private func loadReplies(client: APIClient) async {
+        let loadedIds = Set(messages.map(\.id)).union(replyCache.keys)
+        let missingIds = Set(messages.compactMap(\.replyingMessageId)).subtracting(loadedIds)
+        for id in missingIds {
+            if let message: Message = try? await client.get("message/\(id)") {
+                replyCache[id] = message
+            }
+        }
+    }
+
+    /// メンションなどを名前に置き換えた、見たままの文字
+    private func plainText(of message: Message) -> String {
+        let text = String(formatter.format(message.content).characters)
+        if text.isEmpty, let file = message.files?.first {
+            return file.isImage ? "画像" : file.actualFileName
+        }
+        return text
     }
 
     /// WebSocket で届いたイベントをこのチャンネルの一覧に反映する
@@ -270,10 +498,14 @@ struct ChannelView: View {
             if let client = auth.client {
                 Task { await loadUsers(client: client) }
             }
+            // 開いている間に届いたものはその場で読んだことにする
+            Task { await markLatestAsRead() }
         case .messageUpdated(let message) where message.channelId == channel.id:
             if let index = messages.firstIndex(where: { $0.id == message.id }) {
                 messages[index] = message
             }
+        case .messageEdited(let edit) where edit.channelId == channel.id:
+            applyEdit(edit)
         case .messageDeleted(let messageId, let channelId) where channelId == channel.id:
             messages.removeAll { $0.id == messageId }
         case .connected:
@@ -322,6 +554,19 @@ private struct HistoryRequest: Encodable {
 private struct SendRequest: Encodable {
     let channelId: String
     let message: String
+    /// 返信先。nil なら JSON に含めない
+    let replyingMessageId: String?
+}
+
+private struct EditRequest: Encodable {
+    let messageId: String
+    let message: String
+}
+
+/// 返信先の表示内容
+private struct ReplyPreview {
+    let name: String?
+    let excerpt: String
 }
 
 private struct MessageRow: View {
@@ -329,8 +574,24 @@ private struct MessageRow: View {
     let text: AttributedString
     let user: User?
     let iconURL: URL?
+    let reply: ReplyPreview?
+    let imageDimensions: [String: ImageDimension]
+    let baseURL: URL?
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let reply {
+                ReplyQuote(reply: reply)
+                    // アイコンの右側（本文の位置）にそろえる
+                    .padding(.leading, 46)
+            }
+            content
+        }
+        // 文字の無い余白部分を長押ししても反応するよう、行全体を触れる範囲にする
+        .contentShape(.rect)
+    }
+
+    private var content: some View {
         HStack(alignment: .top, spacing: 10) {
             // URLSession.shared を使うので Cookie も自動で送られる
             AsyncImage(url: iconURL) { image in
@@ -341,7 +602,7 @@ private struct MessageRow: View {
             .frame(width: 36, height: 36)
             .clipShape(.circle)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(user?.name ?? "…")
                         .font(.subheadline.bold())
@@ -354,9 +615,40 @@ private struct MessageRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text(text)
-                    .textSelection(.enabled)
+                // 画像だけのメッセージは本文が空
+                // 文字選択（textSelection）は長押しを奪ってしまうので付けない。コピーは長押しのシートから
+                if !message.content.isEmpty {
+                    Text(text)
+                }
+                MessageAttachments(message: message, imageDimensions: imageDimensions, baseURL: baseURL)
             }
+        }
+    }
+}
+
+/// 返信先の引用（1行）
+private struct ReplyQuote: View {
+    let reply: ReplyPreview
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .font(.caption2)
+            if let name = reply.name {
+                Text(name)
+                    .font(.caption.bold())
+            }
+            Text(reply.excerpt)
+                .font(.caption)
+                .lineLimit(1)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.leading, 8)
+        .overlay(alignment: .leading) {
+            // 左に縦線を引いて引用っぽく
+            Capsule()
+                .fill(.tertiary)
+                .frame(width: 3)
         }
     }
 }

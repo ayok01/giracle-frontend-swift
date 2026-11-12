@@ -15,7 +15,7 @@ struct ChannelListView: View {
                 ForEach(channelStore.joinedChannels) { channel in
                     // タップすると channel を「行き先の値」として積む
                     NavigationLink(value: channel) {
-                        ChannelRow(channel: channel)
+                        ChannelRow(channel: channel, isUnread: channelStore.isUnread(channel.id))
                     }
                 }
                 // 編集モードのときだけ並べ替えを有効にする。
@@ -86,12 +86,15 @@ struct ChannelListView: View {
 
 struct ChannelRow: View {
     let channel: Channel
+    var isUnread = false
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(channel.name)
                     .font(.headline)
+                    // 未読があれば太く、なければ少し細く（Slack と同じ考え方）
+                    .fontWeight(isUnread ? .bold : .regular)
                 if !channel.description.isEmpty {
                     Text(channel.description)
                         .font(.subheadline)
@@ -100,6 +103,12 @@ struct ChannelRow: View {
                 }
             }
             Spacer()
+            if isUnread {
+                Circle()
+                    .fill(.tint)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel("未読あり")
+            }
             if channel.isArchived {
                 Image(systemName: "archivebox")
                     .foregroundStyle(.secondary)

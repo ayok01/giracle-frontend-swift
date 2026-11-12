@@ -26,8 +26,21 @@ final class AuthStore {
         apiBaseURL(from: serverHost).map(APIClient.init)
     }
 
+    /// 接続先サーバーの名前・紹介文（取れなければ nil）
+    private(set) var serverConfig: ServerConfig?
+
+    /// サーバーの設定を取り直す。ドメインが正しくなければ nil になる
+    func loadServerConfig() async {
+        guard let client else {
+            serverConfig = nil
+            return
+        }
+        serverConfig = try? await client.get("server/config")
+    }
+
     /// 起動時に保存済み Cookie が有効か確認する
     func restore() async {
+        await loadServerConfig()
         guard let client else {
             state = .signedOut
             return

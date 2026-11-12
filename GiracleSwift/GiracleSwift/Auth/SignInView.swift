@@ -24,6 +24,13 @@ struct SignInView: View {
                     Text("ドメインだけ入力してください（例: localhost:3000）")
                 }
 
+                // 入力したドメインのサーバーが見つかれば、名前と紹介文を出す（正しく入力できたかの確認にもなる）
+                if let config = auth.serverConfig {
+                    Section {
+                        ServerInfoView(config: config, baseURL: auth.client?.baseURL)
+                    }
+                }
+
                 Section("アカウント") {
                     TextField("ユーザー名", text: $username)
                         .textContentType(.username)
@@ -41,6 +48,14 @@ struct SignInView: View {
                 }
             }
             .navigationTitle("Giracle")
+            // ドメインを打ち終わって 0.5 秒たったらサーバーの情報を取りに行く（打つたびに通信しないため。debounce）。
+            // task(id:) は id が変わると前の処理をキャンセルしてやり直すので、打ち続けている間は待ちがリセットされる
+            .task(id: auth.serverHost) {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                await auth.loadServerConfig()
+            }
+            .animation(.default, value: auth.serverConfig)
             // 画面下に浮かぶ Liquid Glass のボタン
             .safeAreaInset(edge: .bottom) {
                 Button {

@@ -46,6 +46,8 @@ struct ChannelView: View {
     @State private var pendingAction: (() -> Void)?
     /// 絵文字ピッカーを開いているメッセージ
     @State private var pickerTarget: Message?
+    /// プロフィールを開いているユーザー
+    @State private var profileTarget: ProfileTarget?
 
     /// 長押しのシートに並べる、よく使う絵文字。
     /// コードは直接書かず、絵文字から引く（データ側でショートコードが変わっても追従できる）
@@ -188,6 +190,20 @@ struct ChannelView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        // ユーザーのプロフィール
+        .sheet(item: $profileTarget) { target in
+            ProfileView(userId: target.id)
+                .presentationDetents([.medium, .large])
+        }
+        // 本文中のメンション（giracle-user:ユーザーId のリンク）をタップしたらプロフィールを開く。
+        // それ以外の URL は通常どおりブラウザで開く
+        .environment(\.openURL, OpenURLAction { url in
+            if let userId = MessageFormatter.userId(fromProfileURL: url) {
+                profileTarget = ProfileTarget(id: userId)
+                return .handled
+            }
+            return .systemAction
+        })
         // すべての絵文字から選ぶピッカー
         .sheet(item: $pickerTarget) { message in
             EmojiPickerView { code in
@@ -225,7 +241,8 @@ struct ChannelView: View {
             baseURL: auth.client?.baseURL,
             onToggleReaction: { code in
                 Task { await toggleReaction(code, on: message) }
-            }
+            },
+            onTapUser: { profileTarget = ProfileTarget(id: message.userId) }
         )
     }
 
@@ -640,6 +657,11 @@ struct ChannelView: View {
             updateMessage(reaction.messageId) { $0.removeReaction(reaction, myUserId: auth.userId) }
         case .messageDeleted(let messageId, let channelId) where channelId == channel.id:
             messages.removeAll { $0.id == messageId }
+        case .userUpdated(let update):
+            // 名前を表示しているユーザーなら反映する
+            if let user = users[update.id] {
+                users[update.id] = user.updated(with: update)
+            }
         case .connected:
             // つなぎ直したら、切れていた間のメッセージを取りに行く
             if hasLoaded {
@@ -705,6 +727,11 @@ private struct UploadedFile: Decodable {
     var id: String { fileId.id }
 }
 
+/// プロフィールのシートを出す対象（.sheet(item:) には Identifiable な値が必要なので包む）
+private struct ProfileTarget: Identifiable {
+    let id: String
+}
+
 private struct ReactionRequest: Encodable {
     let messageId: String
     let channelId: String
@@ -731,6 +758,7 @@ private struct MessageRow: View {
     let imageDimensions: [String: ImageDimension]
     let baseURL: URL?
     let onToggleReaction: (String) -> Void
+    let onTapUser: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -747,19 +775,15 @@ private struct MessageRow: View {
 
     private var content: some View {
         HStack(alignment: .top, spacing: 10) {
-            // URLSession.shared を使うので Cookie も自動で送られる
-            AsyncImage(url: iconURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Color.secondary.opacity(0.2)
-            }
-            .frame(width: 36, height: 36)
-            .clipShape(.circle)
+            // URLSession.shared を使うので Cookie も自動で送られる。タップでプロフィール
+            UserIcon(url: iconURL)
+                .onTapGesture(perform: onTapUser)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(user?.name ?? "…")
                         .font(.subheadline.bold())
+                        .onTapGesture(perform: onTapUser)
                     Text(message.createdAt, format: .dateTime.month().day().hour().minute())
                         .font(.caption)
                         .foregroundStyle(.secondary)

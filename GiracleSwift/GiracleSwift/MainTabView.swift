@@ -57,6 +57,9 @@ struct MainTabView: View {
                 guard let client = auth.client else { continue }
                 channelStore.apply(event, myUserId: auth.userId, client: client)
                 inboxStore.apply(event, client: client)
+                if case .serverConfigUpdated = event {
+                    Task { await auth.loadServerConfig() }
+                }
             }
         }
     }

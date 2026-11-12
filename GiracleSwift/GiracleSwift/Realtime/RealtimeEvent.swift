@@ -12,6 +12,10 @@ enum RealtimeEvent {
     case messageDeleted(messageId: String, channelId: String)
     case reactionAdded(Reaction)
     case reactionDeleted(Reaction)
+    /// サーバーの名前・紹介文などが変わった
+    case serverConfigUpdated
+    /// 誰かのプロフィール（名前・自己紹介・BAN 状態）が変わった
+    case userUpdated(User)
     /// 受信箱に通知が増えた / 既読で消えた / 全部消えた
     case inboxAdded(InboxItem)
     case inboxDeleted(messageId: String)
@@ -47,6 +51,11 @@ extension RealtimeEvent {
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionAdded($0.data) }
         case "message::DeleteReaction":
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionDeleted($0.data) }
+        case "server::ConfigUpdate":
+            // 中身は使わず、/server/config を取り直す
+            return .serverConfigUpdated
+        case "user::ProfileUpdate":
+            return (try? decoder.decode(Payload<User>.self, from: json)).map { .userUpdated($0.data) }
         case "inbox::Added":
             return (try? decoder.decode(Payload<InboxAddedPayload>.self, from: json)).map { .inboxAdded($0.data.item) }
         case "inbox::Deleted":

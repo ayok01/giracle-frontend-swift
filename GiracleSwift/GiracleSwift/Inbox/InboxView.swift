@@ -5,6 +5,7 @@ struct InboxView: View {
     @Environment(AuthStore.self) private var auth
     @Environment(InboxStore.self) private var inbox
     @Environment(ChannelStore.self) private var channelStore
+    @Environment(RealtimeClient.self) private var realtime
 
     /// Web 版と同じく「日付ごと」「チャンネルごと」を切り替えられる
     enum Grouping: String, CaseIterable {
@@ -108,6 +109,14 @@ struct InboxView: View {
             // 通知が増えたら、まだ知らないユーザーの名前を取ってくる
             .task(id: inbox.items.map(\.id)) {
                 await loadUsers()
+            }
+            // 名前が変わったら反映する
+            .task {
+                for await event in realtime.events() {
+                    if case .userUpdated(let update) = event, let user = users[update.id] {
+                        users[update.id] = user.updated(with: update)
+                    }
+                }
             }
         }
     }

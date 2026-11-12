@@ -27,7 +27,8 @@ struct ChannelListView: View {
             .navigationDestination(for: Channel.self) { channel in
                 ChannelView(channel: channel)
             }
-            .navigationTitle("チャンネル")
+            // サーバー名をタイトルに（Slack のワークスペース名と同じ位置）
+            .navigationTitle(auth.serverConfig?.name ?? "チャンネル")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button(editMode.isEditing ? "完了" : "並べ替え") {

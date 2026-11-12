@@ -49,27 +49,51 @@ struct APIClient {
     /// Web の `const form = new FormData(); form.append("file", file)` を手で組み立てているのと同じ
     func upload<T: Decodable>(
         _ path: String,
-        fields: [String: String],
+        fields: [String: String] = [:],
+        fileField: String = "file",
         file: Data,
         fileName: String,
         mimeType: String
     ) async throws -> T {
+        let data = try await uploadRaw(path, fields: fields, fileField: fileField, file: file, fileName: fileName, mimeType: mimeType)
+        return try JSONDecoder.giracle().decode(APIResponse<T>.self, from: data).data
+    }
+
+    /// 結果の data を使わないアップロード
+    func upload(
+        _ path: String,
+        fields: [String: String] = [:],
+        fileField: String = "file",
+        file: Data,
+        fileName: String,
+        mimeType: String
+    ) async throws {
+        _ = try await uploadRaw(path, fields: fields, fileField: fileField, file: file, fileName: fileName, mimeType: mimeType)
+    }
+
+    private func uploadRaw(
+        _ path: String,
+        fields: [String: String],
+        fileField: String,
+        file: Data,
+        fileName: String,
+        mimeType: String
+    ) async throws -> Data {
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
         for (name, value) in fields {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
         }
-        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\nContent-Type: \(mimeType)\r\n\r\n".utf8))
+        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(fileName)\"\r\nContent-Type: \(mimeType)\r\n\r\n".utf8))
         body.append(file)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
 
-        let data = try await request(
+        return try await request(
             path,
             method: "POST",
             body: body,
             contentType: "multipart/form-data; boundary=\(boundary)"
         )
-        return try JSONDecoder.giracle().decode(APIResponse<T>.self, from: data).data
     }
 
     private func send<T: Decodable>(_ path: String, method: String, body: Data?) async throws -> T {

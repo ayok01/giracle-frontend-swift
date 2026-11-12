@@ -48,8 +48,21 @@ struct MessageFormatter {
         let name = users[userId]?.name ?? "不明なユーザー"
         var s = AttributedString("@\(name)")
         s.font = .body.bold()
+        // タップでプロフィールを開けるよう、アプリ内だけで使う URL を付ける（ChannelView の openURL で受け取る）
+        s.link = Self.profileURL(for: userId)
         s.backgroundColor = userId == myUserId ? Color.accentColor.opacity(0.3) : Color.gray.opacity(0.2)
         return s
+    }
+
+    /// プロフィールを開くためのアプリ内 URL（"giracle-user:ユーザーId"）
+    static func profileURL(for userId: String) -> URL? {
+        URL(string: "giracle-user:\(userId)")
+    }
+
+    /// アプリ内 URL ならユーザーIdを取り出す
+    static func userId(fromProfileURL url: URL) -> String? {
+        guard url.scheme == "giracle-user" else { return nil }
+        return url.absoluteString.replacing("giracle-user:", with: "")
     }
 
     private func channelName(_ channelId: String) -> AttributedString {

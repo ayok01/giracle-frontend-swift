@@ -72,6 +72,26 @@ final class ChannelStore {
             unreadIds.insert(message.channelId)
         case .readTimeUpdated(let channelId):
             unreadIds.remove(channelId)
+        case .channelJoined(let channelId):
+            joinedIds.insert(channelId)
+            // 知らないチャンネル（新しく作られた・見られるようになった）なら一覧ごと取り直す
+            if !allChannels.contains(where: { $0.id == channelId }), let myUserId {
+                Task { await load(client: client, myUserId: myUserId) }
+            }
+        case .channelLeft(let channelId):
+            joinedIds.remove(channelId)
+            unreadIds.remove(channelId)
+        case .channelUpdated(let channel):
+            if let channel, let index = allChannels.firstIndex(where: { $0.id == channel.id }) {
+                allChannels[index] = channel
+            } else if let myUserId {
+                // 読めなかった・知らないチャンネルなら一覧ごと取り直す（見られる範囲が変わった可能性もある）
+                Task { await load(client: client, myUserId: myUserId) }
+            }
+        case .channelDeleted(let channelId):
+            allChannels.removeAll { $0.id == channelId }
+            joinedIds.remove(channelId)
+            unreadIds.remove(channelId)
         case .connected:
             // 切れていた間に届いた分を取り直す
             Task { await loadUnread(client: client) }

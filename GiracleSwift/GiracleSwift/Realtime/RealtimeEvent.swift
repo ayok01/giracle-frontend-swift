@@ -12,6 +12,12 @@ enum RealtimeEvent {
     case messageDeleted(messageId: String, channelId: String)
     case reactionAdded(Reaction)
     case reactionDeleted(Reaction)
+    /// 自分がチャンネルに参加した / 退出した（別の端末での操作・招待・キックでも届く）
+    case channelJoined(channelId: String)
+    case channelLeft(channelId: String)
+    /// チャンネルの名前・説明などが変わった（中身が読めなかったときは nil）
+    case channelUpdated(Channel?)
+    case channelDeleted(channelId: String)
     /// サーバーの名前・紹介文などが変わった
     case serverConfigUpdated
     /// 誰かのプロフィール（名前・自己紹介・BAN 状態）が変わった
@@ -51,6 +57,14 @@ extension RealtimeEvent {
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionAdded($0.data) }
         case "message::DeleteReaction":
             return (try? decoder.decode(Payload<Reaction>.self, from: json)).map { .reactionDeleted($0.data) }
+        case "channel::Join":
+            return (try? decoder.decode(Payload<ChannelIdOnly>.self, from: json)).map { .channelJoined(channelId: $0.data.channelId) }
+        case "channel::Left":
+            return (try? decoder.decode(Payload<ChannelIdOnly>.self, from: json)).map { .channelLeft(channelId: $0.data.channelId) }
+        case "channel::UpdateChannel":
+            return .channelUpdated(try? decoder.decode(Payload<Channel>.self, from: json).data)
+        case "channel::Deleted":
+            return (try? decoder.decode(Payload<ChannelIdOnly>.self, from: json)).map { .channelDeleted(channelId: $0.data.channelId) }
         case "server::ConfigUpdate":
             // 中身は使わず、/server/config を取り直す
             return .serverConfigUpdated
@@ -70,6 +84,10 @@ extension RealtimeEvent {
             return nil
         }
     }
+}
+
+private struct ChannelIdOnly: Decodable {
+    let channelId: String
 }
 
 private struct InboxDeleted: Decodable {

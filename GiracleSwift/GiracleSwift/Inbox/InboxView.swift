@@ -14,8 +14,8 @@ struct InboxView: View {
     }
 
     @State private var grouping: Grouping = .date
-    /// 開いているチャンネル（NavigationStack の履歴。React Router の history に近い）
-    @State private var path: [Channel] = []
+    /// 開いている画面（NavigationStack の履歴。React Router の history に近い）
+    @State private var path: [ChannelRoute] = []
     /// userId → User（名前とメンションの表示用）
     @State private var users: [String: User] = [:]
     @State private var isConfirmingClear = false
@@ -73,8 +73,9 @@ struct InboxView: View {
                 }
             }
             .navigationTitle("受信箱")
-            .navigationDestination(for: Channel.self) { channel in
-                ChannelView(channel: channel)
+            .navigationDestination(for: ChannelRoute.self) { route in
+                // 通知のメッセージの位置を開く
+                ChannelView(channel: route.channel, initialMessageId: route.messageId)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -143,10 +144,10 @@ struct InboxView: View {
         }
     }
 
-    /// タップでそのチャンネルを開き、既読にする
+    /// タップでそのメッセージの位置を開き、既読にする
     private func open(_ item: InboxItem) {
         if let channel = channelStore.allChannels.first(where: { $0.id == item.message.channelId }) {
-            path.append(channel)
+            path.append(ChannelRoute(channel: channel, messageId: item.message.id))
         }
         Task { await read(item) }
     }

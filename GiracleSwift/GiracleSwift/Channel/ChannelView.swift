@@ -4,6 +4,8 @@ import PhotosUI
 /// チャンネルのメッセージ画面
 struct ChannelView: View {
     let channel: Channel
+    /// 開いたときに表示したいメッセージ（受信箱から開いたときなど）。nil なら最新
+    var initialMessageId: String?
 
     @Environment(AuthStore.self) private var auth
     @Environment(RealtimeClient.self) private var realtime
@@ -22,6 +24,21 @@ struct ChannelView: View {
     /// いちばん古いメッセージまで読み込んだか
     @State private var atTop = false
     @State private var isLoadingOlder = false
+    /// 最新のメッセージまで表示しているか。指定したメッセージへ移動したときは false（それより新しいものは読み込んでいない）
+    @State private var atEnd = true
+    /// 過去を表示している間に、新しいメッセージが届いたか
+    @State private var hasNewMessages = false
+    /// 移動先として目立たせているメッセージ
+    @State private var highlightedId: String?
+    /// メッセージリンク先のメッセージ（メッセージId → メッセージ）
+    @State private var linkedMessages: [String: Message] = [:]
+    /// 取れなかったメッセージリンク先（削除済み・権限なし）
+    @State private var unavailableLinks: Set<String> = []
+    /// 別のチャンネルのメッセージリンクを開くときの行き先
+    @State private var linkedRoute: ChannelRoute?
+    @State private var isLoadingNewer = false
+    /// スクロールの位置合わせ用の入れ物（クラスなので中身を変えても画面は描き直されない）
+    @State private var scrollTracker = ScrollTracker()
     /// スクロール位置。送信後に最新メッセージまで戻すのに使う
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     /// ナビゲーションバー・入力欄・キーボードの分の余白（反転に合わせて自分で付ける）
@@ -74,6 +91,15 @@ struct ChannelView: View {
         // - 古いメッセージは「末尾」に足される = 見ている場所より後ろなので位置がずれない
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
+                // 過去を表示中、先頭（= 画面の一番下）に来たら、それより新しいメッセージを読み込む見張り役
+                if hasLoaded, !atEnd, !messages.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .task(id: messages.last?.id) {
+                            await loadNewerPage()
+                        }
+                }
+
                 // 新しい順に並べる（先頭 = 画面の一番下）
                 ForEach(messages.reversed()) { message in
                     Group {
@@ -81,6 +107,12 @@ struct ChannelView: View {
                             SystemMessageRow(content: system, user: users[system.targetUserId])
                         } else {
                             messageRow(message)
+                                // 移動先のメッセージは少しの間だけ色を付ける
+                                .padding(highlightedId == message.id ? 6 : 0)
+                                .background(
+                                    highlightedId == message.id ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.clear),
+                                    in: .rect(cornerRadius: 12)
+                                )
                                 // 長押しで操作のシートを出す。
                                 // 標準の contextMenu は反転した一覧だと浮かび上がる瞬間に裏返るため使わない
                                 .onLongPressGesture {
@@ -107,6 +139,18 @@ struct ChannelView: View {
         }
         .flippedUpsideDown()
         .scrollPosition($scrollPosition)
+        // 中身の高さと見えている位置を覚えておく（新しいメッセージを先頭に足したときの位置合わせ用）。
+        // スクロールのたびに変わる値なので @State には入れず、画面を描き直さない入れ物に入れる
+        .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+            ScrollMetrics(contentHeight: geometry.contentSize.height, visibleTop: geometry.visibleRect.minY)
+        } action: { _, metrics in
+            scrollTracker.metrics = metrics
+            // 先頭に足して中身が伸びたら、伸びた分だけずらして、見ていたメッセージを同じ場所に保つ
+            if let before = scrollTracker.pendingAdjust, metrics.contentHeight != before.contentHeight {
+                scrollTracker.pendingAdjust = nil
+                scrollPosition.scrollTo(y: before.visibleTop + (metrics.contentHeight - before.contentHeight))
+            }
+        }
         // 反転すると、ナビゲーションバーや入力欄・キーボードの分の余白も上下が入れ替わってしまう。
         // そこで自動の余白は無効にして、測った値を上下逆にして自分で付ける
         .contentMargins(.top, safeAreaInsets.bottom, for: .automatic)
@@ -144,7 +188,13 @@ struct ChannelView: View {
         }
         // チャンネル内ではタブバーを隠し、代わりに入力欄を置く
         .toolbarVisibility(.hidden, for: .tabBar)
-        .task { await load() }
+        .task {
+            if let initialMessageId {
+                await jump(to: initialMessageId)
+            } else {
+                await load()
+            }
+        }
         // "@…" を打っている間、チャンネルの参加者から候補を探す（0.2 秒の debounce。Web 版と同じ）
         .task(id: MentionDraft.query(in: draft)) {
             await searchMentionCandidates()
@@ -210,8 +260,17 @@ struct ChannelView: View {
                 profileTarget = ProfileTarget(id: userId)
                 return .handled
             }
+            // 本文中の「#チャンネル名 のメッセージ」をタップしたらそのメッセージへ
+            if let ref = MessageLinkRef(url: url) {
+                openLink(ref)
+                return .handled
+            }
             return .systemAction
         })
+        // 別のチャンネルのメッセージリンクを開いたら、そのチャンネルを積んで移動する
+        .navigationDestination(item: $linkedRoute) { route in
+            ChannelView(channel: route.channel, initialMessageId: route.messageId)
+        }
         // すべての絵文字から選ぶピッカー
         .sheet(item: $pickerTarget) { message in
             EmojiPickerView { code in
@@ -250,7 +309,14 @@ struct ChannelView: View {
             onToggleReaction: { code in
                 Task { await toggleReaction(code, on: message) }
             },
-            onTapUser: { profileTarget = ProfileTarget(id: message.userId) }
+            onTapUser: { profileTarget = ProfileTarget(id: message.userId) },
+            onTapReply: {
+                if let replyId = message.replyingMessageId {
+                    Task { await jump(to: replyId) }
+                }
+            },
+            linkPreviews: message.messageLinks.map(linkPreview(for:)),
+            onOpenLink: openLink
         )
     }
 
@@ -332,6 +398,11 @@ struct ChannelView: View {
             UIPasteboard.general.string = plainText(of: message)
             closeSheet {}
         }
+        Button("リンクをコピー", systemImage: "link") {
+            // Web 版（HoverMenu.tsx）と同じ形式。貼り付けて送ると「#チャンネル名 のメッセージ」になる
+            UIPasteboard.general.string = "&<\(message.channelId):\(message.id)>"
+            closeSheet {}
+        }
         if isJoined, isMine {
             Button("編集", systemImage: "pencil") {
                 closeSheet {
@@ -375,9 +446,27 @@ struct ChannelView: View {
         return nil
     }
 
+    /// 入力欄（か参加ボタン）と、過去を表示中なら「最新のメッセージへ」ボタン
+    private var bottomBar: some View {
+        VStack(spacing: 8) {
+            if !atEnd {
+                Button(
+                    hasNewMessages ? "新しいメッセージがあります" : "最新のメッセージへ",
+                    systemImage: "arrow.down"
+                ) {
+                    Task { await load() }
+                }
+                .buttonStyle(.glass)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            inputArea
+        }
+        .animation(.snappy, value: atEnd)
+    }
+
     /// 参加済みなら入力欄、未参加なら参加ボタン
     @ViewBuilder
-    private var bottomBar: some View {
+    private var inputArea: some View {
         if channelStore.isJoined(channel.id) {
             MessageInputBar(
                 text: $draft,
@@ -423,11 +512,49 @@ struct ChannelView: View {
             messages = result.history.reversed()
             imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
             atTop = result.atTop
+            atEnd = true
+            hasNewMessages = false
             errorMessage = nil
             await markLatestAsRead()
             await loadUsers(client: client)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 指定したメッセージへ移動する。
+    /// そのメッセージを「いちばん新しい位置」として、それ以前の30件を読み込む。
+    /// 反転した一覧ではいちばん新しい位置が最初から画面の下に見えるので、スクロールさせずに表示できる
+    /// （iOS 27 の LazyVStack では、まだ描画していない行への scrollTo が当てにならないため）
+    private func jump(to messageId: String) async {
+        guard let client = auth.client else { return }
+        defer { hasLoaded = true }
+        do {
+            let result: MessageHistory = try await client.post(
+                "channel/get-history/\(channel.id)",
+                body: HistoryRequest(direction: .older, messageIdFrom: messageId)
+            )
+            messages = result.history.reversed()
+            imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
+            atTop = result.atTop
+            // 指定したメッセージがチャンネルの最新ならそのまま最新表示と同じ
+            atEnd = result.atEnd
+            hasNewMessages = false
+            errorMessage = nil
+            scrollPosition.scrollTo(edge: .top)
+            // 少しの間だけ目立たせる
+            highlightedId = messageId
+            Task {
+                try? await Task.sleep(for: .seconds(2.5))
+                withAnimation { if highlightedId == messageId { highlightedId = nil } }
+            }
+            // 受信箱にあれば既読にする（最新までは読んでいないのでチャンネルの既読は進めない）
+            await inbox.readShown(messageIds: messages.map(\.id), client: client)
+            await loadUsers(client: client)
+        } catch {
+            // メッセージが消されているなどで見つからなければ、最新を表示する
+            await load()
+            sendError = "メッセージが見つかりませんでした"
         }
     }
 
@@ -453,6 +580,34 @@ struct ChannelView: View {
     }
 
     /// いちばん新しいメッセージより後を読み込む（WebSocket が切れていた間の分）
+    /// 過去を表示中に、いちばん新しいメッセージより後の30件を読み込む（下へスクロールしたとき）
+    private func loadNewerPage() async {
+        guard hasLoaded, !atEnd, !isLoadingNewer,
+              let client = auth.client, let newest = messages.last
+        else { return }
+        isLoadingNewer = true
+        defer { isLoadingNewer = false }
+        do {
+            let result: MessageHistory = try await client.post(
+                "channel/get-history/\(channel.id)",
+                body: HistoryRequest(direction: .newer, messageIdFrom: newest.id)
+            )
+            // 足す前の高さと位置を覚えておき、足した後に伸びた分だけずらす（onScrollGeometryChange で行う）
+            scrollTracker.pendingAdjust = scrollTracker.metrics
+            merge(result.history)
+            imageDimensions.merge(result.imageDimensions ?? [:]) { _, new in new }
+            atEnd = result.atEnd
+            if atEnd {
+                // 最新まで追いついたら、ふだんの表示と同じ扱いに戻す
+                hasNewMessages = false
+                await markLatestAsRead()
+            }
+            await loadUsers(client: client)
+        } catch {
+            scrollTracker.pendingAdjust = nil
+        }
+    }
+
     private func loadNewer() async {
         guard let client = auth.client, let newest = messages.last else { return }
         do {
@@ -476,7 +631,8 @@ struct ChannelView: View {
         guard let client = auth.client else { return }
         // 表示したメッセージのうち、受信箱にあるもの（自分へのメンション・返信）も既読にする
         await inbox.readShown(messageIds: messages.map(\.id), client: client)
-        guard let newest = messages.last, channelStore.isJoined(channel.id) else { return }
+        // 過去を表示中は、最新まで読んだことにはしない
+        guard atEnd, let newest = messages.last, channelStore.isJoined(channel.id) else { return }
         await channelStore.markAsRead(newest, client: client)
     }
 
@@ -490,10 +646,54 @@ struct ChannelView: View {
         messages = byId.values.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
-    /// 返信先と、まだ知らないユーザーの情報をまとめて取ってくる
+    /// メッセージリンクを開く。同じチャンネルならその場で移動、別のチャンネルならそのチャンネルを開く
+    private func openLink(_ ref: MessageLinkRef) {
+        if ref.channelId == channel.id {
+            Task { await jump(to: ref.messageId) }
+        } else if let target = channelStore.allChannels.first(where: { $0.id == ref.channelId }) {
+            linkedRoute = ChannelRoute(channel: target, messageId: ref.messageId)
+        } else {
+            sendError = "このチャンネルは表示できません"
+        }
+    }
+
+    /// メッセージリンクのカードに出す内容
+    private func linkPreview(for ref: MessageLinkRef) -> LinkedMessagePreview {
+        let linked = linkedMessages[ref.messageId] ?? messages.first { $0.id == ref.messageId }
+        var text = linked.map { formatter.format($0.content) }
+        // 長い本文は 150 文字まで（Web 版と同じ）
+        if let content = linked?.content, content.count > 150 {
+            text = formatter.format(String(content.prefix(150)) + "…")
+        }
+        return LinkedMessagePreview(
+            ref: ref,
+            message: linked,
+            isUnavailable: unavailableLinks.contains(ref.messageId),
+            userName: linked.flatMap { users[$0.userId]?.name },
+            channelName: channelStore.allChannels.first { $0.id == ref.channelId }?.name ?? "不明なチャンネル",
+            text: text,
+            iconURL: linked.flatMap { iconURL(for: $0.userId) }
+        )
+    }
+
+    /// 本文中のメッセージリンク先を、まだ持っていなければ取ってくる
+    private func loadLinkedMessages(client: APIClient) async {
+        let known = Set(messages.map(\.id)).union(linkedMessages.keys).union(unavailableLinks)
+        let missing = Set(messages.flatMap(\.messageLinks).map(\.messageId)).subtracting(known)
+        for id in missing {
+            if let message: Message = try? await client.get("message/\(id)") {
+                linkedMessages[id] = message
+            } else {
+                unavailableLinks.insert(id)
+            }
+        }
+    }
+
+    /// 返信先・リンク先と、まだ知らないユーザーの情報をまとめて取ってくる
     private func loadUsers(client: APIClient) async {
         await loadReplies(client: client)
-        let allMessages = messages + Array(replyCache.values)
+        await loadLinkedMessages(client: client)
+        let allMessages = messages + Array(replyCache.values) + Array(linkedMessages.values)
         let unknownIds = Set(allMessages.flatMap(\.relatedUserIds)).subtracting(users.keys)
         for userId in unknownIds {
             if let user: User = try? await client.get("user/info/\(userId)") {
@@ -545,8 +745,11 @@ struct ChannelView: View {
                     fileIds: fileIds.isEmpty ? nil : fileIds
                 )
             )
-            // WebSocket の方が先に届いていることもあるので重複チェック
-            if !messages.contains(where: { $0.id == sent.id }) {
+            if !atEnd {
+                // 過去を表示中に送ったら、最新を読み直して送ったメッセージを見せる
+                await load()
+            } else if !messages.contains(where: { $0.id == sent.id }) {
+                // WebSocket の方が先に届いていることもあるので重複チェック
                 messages.append(sent)
             }
             // 過去を読んでいる途中でも、送ったら最新（反転しているのでスクロールの先頭）へ戻る
@@ -674,6 +877,11 @@ struct ChannelView: View {
     private func apply(_ event: RealtimeEvent) {
         switch event {
         case .messageSent(let message) where message.channelId == channel.id:
+            // 過去を表示中は足さない（間が抜けた一覧になるため）。ボタンで知らせる
+            guard atEnd else {
+                hasNewMessages = true
+                return
+            }
             guard !messages.contains(where: { $0.id == message.id }) else { return }
             messages.append(message)
             if let client = auth.client {
@@ -700,8 +908,8 @@ struct ChannelView: View {
                 users[update.id] = user.updated(with: update)
             }
         case .connected:
-            // つなぎ直したら、切れていた間のメッセージを取りに行く
-            if hasLoaded {
+            // つなぎ直したら、切れていた間のメッセージを取りに行く（最新を表示しているときだけ）
+            if hasLoaded, atEnd {
                 Task { await loadNewer() }
             }
         default:
@@ -764,6 +972,21 @@ private struct UploadedFile: Decodable {
     var id: String { fileId.id }
 }
 
+/// スクロールの高さと位置
+private struct ScrollMetrics: Equatable {
+    var contentHeight: CGFloat
+    var visibleTop: CGFloat
+}
+
+/// スクロールの位置合わせ用の入れ物。
+/// 値が変わるたびに画面を描き直す必要はないので、@Observable ではない普通のクラスにしている
+/// （React の useRef と同じ使い方）
+private final class ScrollTracker {
+    var metrics = ScrollMetrics(contentHeight: 0, visibleTop: 0)
+    /// 新しいメッセージを先頭に足す直前の状態。足した後の位置合わせが済んだら nil
+    var pendingAdjust: ScrollMetrics?
+}
+
 /// プロフィールのシートを出す対象（.sheet(item:) には Identifiable な値が必要なので包む）
 private struct ProfileTarget: Identifiable {
     let id: String
@@ -796,6 +1019,9 @@ private struct MessageRow: View {
     let baseURL: URL?
     let onToggleReaction: (String) -> Void
     let onTapUser: () -> Void
+    let onTapReply: () -> Void
+    let linkPreviews: [LinkedMessagePreview]
+    let onOpenLink: (MessageLinkRef) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -803,6 +1029,9 @@ private struct MessageRow: View {
                 ReplyQuote(reply: reply)
                     // アイコンの右側（本文の位置）にそろえる
                     .padding(.leading, 46)
+                    // タップで返信先のメッセージへ移動
+                    .contentShape(.rect)
+                    .onTapGesture(perform: onTapReply)
             }
             content
         }
@@ -836,6 +1065,12 @@ private struct MessageRow: View {
                     Text(text)
                 }
                 MessageAttachments(message: message, imageDimensions: imageDimensions, baseURL: baseURL)
+                // 本文中のメッセージリンク先の中身
+                ForEach(linkPreviews) { preview in
+                    MessageLinkCard(preview: preview) {
+                        onOpenLink(preview.ref)
+                    }
+                }
                 if let reactions = message.reactionSummary, !reactions.isEmpty {
                     ReactionBar(reactions: reactions, onToggle: onToggleReaction)
                 }

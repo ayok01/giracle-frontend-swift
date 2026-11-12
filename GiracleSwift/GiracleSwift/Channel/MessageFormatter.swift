@@ -25,8 +25,8 @@ struct MessageFormatter {
                 result += mention(String(userId))
             } else if let channelId = output.channel {
                 result += channelName(String(channelId))
-            } else if output.linkMessage != nil {
-                result += messageLink()
+            } else if let channelId = output.linkChannel, let messageId = output.linkMessage {
+                result += messageLink(MessageLinkRef(channelId: String(channelId), messageId: String(messageId)))
             } else if let code = output.code {
                 result += inlineCode(String(code))
             }
@@ -72,9 +72,16 @@ struct MessageFormatter {
         return s
     }
 
-    private func messageLink() -> AttributedString {
-        var s = AttributedString("💬 メッセージへのリンク")
-        s.foregroundColor = .accentColor
+    /// Web 版と同じく「#チャンネル名 のメッセージ」。タップで移動できるようアプリ内 URL を付ける
+    private func messageLink(_ ref: MessageLinkRef) -> AttributedString {
+        var name = channels[ref.channelId]?.name ?? "不明なチャンネル"
+        if name.count > 18 {
+            name = String(name.prefix(18)) + "…"
+        }
+        var s = AttributedString("#\(name) のメッセージ")
+        s.font = .body.bold()
+        s.backgroundColor = Color.gray.opacity(0.2)
+        s.link = ref.url
         return s
     }
 

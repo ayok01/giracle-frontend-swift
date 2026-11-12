@@ -17,9 +17,10 @@ struct ChannelView: View {
     /// いちばん古いメッセージまで読み込んだか
     @State private var atTop = false
     @State private var isLoadingOlder = false
-    /// スクロール位置。コードから特定のメッセージへスクロールさせるのに使う
+    /// スクロール位置。送信後に最新メッセージまで戻すのに使う
     @State private var scrollPosition = ScrollPosition(idType: String.self)
-    @State private var scrollPhase: ScrollPhase = .idle
+    /// ナビゲーションバー・入力欄・キーボードの分の余白（反転に合わせて自分で付ける）
+    @State private var safeAreaInsets = EdgeInsets()
 
     @State private var draft = ""
     @State private var isSending = false
@@ -34,60 +35,59 @@ struct ChannelView: View {
     }
 
     var body: some View {
+        // 一覧ごと上下反転したスクロール（チャットの定番。React Native の FlatList inverted と同じ）。
+        // スクロールの「先頭」が画面の下になるので、
+        // - 開いたとき何もしなくても最新（先頭）が見える
+        // - 古いメッセージは「末尾」に足される = 見ている場所より後ろなので位置がずれない
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                // まだ古いメッセージがあることを示す
+                // 新しい順に並べる（先頭 = 画面の一番下）
+                ForEach(messages.reversed()) { message in
+                    Group {
+                        if let system = message.systemContent {
+                            SystemMessageRow(content: system, user: users[system.targetUserId])
+                        } else {
+                            MessageRow(
+                                message: message,
+                                text: formatter.format(message.content),
+                                user: users[message.userId],
+                                iconURL: iconURL(for: message.userId)
+                            )
+                        }
+                    }
+                    // 一覧ごと反転しているので、各行はもう一度反転して元の向きに戻す
+                    .flippedUpsideDown()
+                }
+
+                // 末尾（= 画面の一番上）に来たら古いメッセージを読み込む見張り役。
+                // id が変わる（古いのを読み込んだ）たびに、まだ見えていればもう一度実行される
                 if hasLoaded, !atTop, !messages.isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity)
-                }
-
-                ForEach(messages) { message in
-                    if let system = message.systemContent {
-                        SystemMessageRow(content: system, user: users[system.targetUserId])
-                    } else {
-                        MessageRow(
-                            message: message,
-                            text: formatter.format(message.content),
-                            user: users[message.userId],
-                            iconURL: iconURL(for: message.userId)
-                        )
-                    }
+                        .task(id: messages.first?.id) {
+                            await loadOlder()
+                        }
                 }
             }
-            // 各メッセージを「スクロール先」として登録する（scrollPosition で id 指定するのに必要）
-            .scrollTargetLayout()
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 8)
         }
+        .flippedUpsideDown()
         .scrollPosition($scrollPosition)
-        // 指で触っている・慣性で動いている、などのスクロール状態を覚えておく
-        .onScrollPhaseChange { _, newPhase in
-            scrollPhase = newPhase
+        // 反転すると、ナビゲーションバーや入力欄・キーボードの分の余白も上下が入れ替わってしまう。
+        // そこで自動の余白は無効にして、測った値を上下逆にして自分で付ける
+        .contentMargins(.top, safeAreaInsets.bottom, for: .automatic)
+        .contentMargins(.bottom, safeAreaInsets.top, for: .automatic)
+        // 反転したスクロールでは、バーの後ろのぼかし（スクロールエッジ効果）が
+        // 反転前の向きで計算されて画面全体にかかってしまう（iOS 26〜の既知の不具合 FB20540755）。
+        // この画面では切って、代わりにナビゲーションバーに背景を付ける
+        .scrollEdgeEffectHidden(true, for: .all)
+        .ignoresSafeArea(edges: .vertical)
+        .onGeometryChange(for: EdgeInsets.self) { geometry in
+            geometry.safeAreaInsets
+        } action: { insets in
+            safeAreaInsets = insets
         }
-        // 上端から 200pt 以内に「入った瞬間」だけ古いメッセージを読み込む。
-        // 値が false → true に変わったときだけ呼ばれるので、読み込みが繰り返されない。
-        // さらに「ユーザーがスクロールしている最中」に限ることで、
-        // 開いた直後（まだ一番下へ移動する前の一瞬）に反応してしまうのを防ぐ
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top < 200
-        } action: { _, isNearTop in
-            if isNearTop, scrollPhase == .interacting || scrollPhase == .decelerating {
-                Task { await loadOlder() }
-            }
-        }
-        // 新しいメッセージが増えたら一番下までスクロール（scrollIntoView 相当）
-        .onChange(of: messages.last?.id) { oldLastId, lastId in
-            // 最初の読み込み（空 → メッセージあり）は defaultScrollAnchor に任せる
-            guard oldLastId != nil, let lastId else { return }
-            withAnimation {
-                scrollPosition.scrollTo(id: lastId, anchor: .bottom)
-            }
-        }
-        // 開いたとき一番下（最新）から表示する。
-        // .sizeChanges も下にしておくと、メッセージが入って中身の高さが確定していく間も
-        // 下端に合わせ続けてくれる（キーボード表示で画面の高さが変わったときも同じ）
-        .defaultScrollAnchor(.bottom)
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
         // 一覧を下にスワイプするとキーボードが閉じる
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) {
@@ -95,6 +95,20 @@ struct ChannelView: View {
         }
         .navigationTitle(channel.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        .toolbar {
+            // ぼかしが無い分、チャンネル名をガラスのカプセルに乗せて読みやすくする
+            // （navigationTitle は戻るボタンの長押しメニューなどで使われるので残す）
+            ToolbarItem(placement: .principal) {
+                Text(channel.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .padding(.horizontal, 16)
+                    // ツールバーのボタン（戻るボタン）と同じ高さにそろえる
+                    .frame(height: 44)
+                    .glassEffect(.regular, in: .capsule)
+            }
+        }
         // チャンネル内ではタブバーを隠し、代わりに入力欄を置く
         .toolbarVisibility(.hidden, for: .tabBar)
         .task { await load() }
@@ -175,12 +189,9 @@ struct ChannelView: View {
             )
             merge(result.history)
             atTop = result.atTop
-            // 上に足した分だけ見ていた位置が下にずれるので、
-            // 読み込む前に一番上にあったメッセージへ戻す（アニメーションなしで一瞬で）
-            scrollPosition.scrollTo(id: oldest.id, anchor: .top)
             await loadUsers(client: client)
         } catch {
-            // 失敗しても、もう一度上端に近づいたときにやり直す
+            // 失敗しても、見張り役がもう一度表示されたときにやり直す
         }
     }
 
@@ -237,6 +248,10 @@ struct ChannelView: View {
             // WebSocket の方が先に届いていることもあるので重複チェック
             if !messages.contains(where: { $0.id == sent.id }) {
                 messages.append(sent)
+            }
+            // 過去を読んでいる途中でも、送ったら最新（反転しているのでスクロールの先頭）へ戻る
+            withAnimation {
+                scrollPosition.scrollTo(edge: .top)
             }
             await loadUsers(client: client)
         } catch {
